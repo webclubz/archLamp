@@ -5,13 +5,56 @@
 
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
 ARCH_USER=${SUDO_USER:-$USER}
 SITES_DIR="/home/$ARCH_USER/Sites"
 VHOSTS_DIR="/etc/httpd/conf/extra/vhosts.d"
 HOSTS_FILE="/etc/hosts"
 HTTPD_CONF="/etc/httpd/conf/httpd.conf"
+WEBGROUP="${WEBGROUP:-webdev}"   # <-- κοινό group για όλα
 
 say() { echo -e "$*"; }
+
+# ---------------------------------------------------------------------------
+# Check if LAMP stack is properly installed
+# ---------------------------------------------------------------------------
+function check_lamp_installation() {
+    local missing_components=()
+    
+    # Check if Apache config exists
+    if [ ! -f "$HTTPD_CONF" ]; then
+        missing_components+=("Apache configuration")
+    fi
+    
+    # Check if required directories exist
+    if [ ! -d "/etc/httpd" ]; then
+        missing_components+=("Apache installation")
+    fi
+    
+    # Check if Apache service is available
+    if ! systemctl list-unit-files httpd.service >/dev/null 2>&1; then
+        missing_components+=("Apache service")
+    fi
+    
+    # Check if PHP-FPM is installed
+    if ! systemctl list-unit-files php-fpm.service >/dev/null 2>&1; then
+        missing_components+=("PHP-FPM service")
+    fi
+    
+    if [ ${#missing_components[@]} -gt 0 ]; then
+        say "❌ LAMP stack not properly installed. Missing components:"
+        for component in "${missing_components[@]}"; do
+            say "   - $component"
+        done
+        say ""
+        say "🔧 Please run installLamp.sh first to set up the LAMP stack:"
+        say "   ./installLamp.sh"
+        say ""
+        exit 1
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Ensure httpd.conf includes vhosts.d and has a ServerName
@@ -32,15 +75,109 @@ function ensure_include_in_httpd_conf() {
 }
 
 # ---------------------------------------------------------------------------
-# Ensure ~/Sites exists and Apache can traverse into it
+# Ensure ~/Sites exists and Apache can traverse into it (ασφαλέστερο)
 # ---------------------------------------------------------------------------
 function ensure_sites_dir() {
     if [ ! -d "$SITES_DIR" ]; then
         say "📁 Creating $SITES_DIR..."
-        sudo -u "$ARCH_USER" mkdir -p "$SITES_DIR"
+        sudo install -d -o "$ARCH_USER" -g "$WEBGROUP" -m 2775 "$SITES_DIR"
     fi
-    sudo chmod o+x "/home/$ARCH_USER"
-    sudo chmod o+rx "$SITES_DIR"
+    # Δώσε traverse στο group (webdev) στο $HOME για να μπαίνει ο http
+    if command -v setfacl >/dev/null 2>&1; then
+        sudo setfacl -m g:"$WEBGROUP":x "/home/$ARCH_USER"
+        sudo setfacl -m g:"$WEBGROUP":rwx "$SITES_DIR"
+        sudo setfacl -d -m g:"$WEBGROUP":rwx "$SITES_DIR"
+    else
+        sudo chmod o+x "/home/$ARCH_USER"   # fallback (λιγότερο ασφαλές)
+        sudo chmod 2775 "$SITES_DIR"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Helper: ενιαία ρύθμιση permissions/project
+# ---------------------------------------------------------------------------
+_set_project_perms() {
+  local path="${1:?usage: _set_project_perms /path}"
+  local group_in="${2:-$WEBGROUP}"
+
+  sudo chown -R "$ARCH_USER:$group_in" "$path"
+  sudo find "$path" -type d -exec chmod 2775 {} \;
+  sudo find "$path" -type f -exec chmod 664 {} \;
+
+  if command -v setfacl >/dev/null; then
+    sudo setfacl -R -m g:"$group_in":rwx "$path"
+    sudo setfacl -dR -m g:"$group_in":rwx "$path"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Setup function to create Sites directory with proper permissions
+# ---------------------------------------------------------------------------
+setup() {
+  local ARCHUSER="${1:-${ARCH_USER:-$USER}}"
+  local SITES_DIR_IN="${2:-/home/$ARCHUSER/Sites}"
+  local WEBGROUP_IN="${3:-$WEBGROUP}"
+  local PHPFPM_POOL="${4:-/etc/php/php-fpm.d/www.conf}"
+
+  echo "[i] user=${ARCHUSER} sites=${SITES_DIR_IN} group=${WEBGROUP_IN}"
+
+  # 1) Group συνεργασίας
+  if ! getent group "$WEBGROUP_IN" >/dev/null; then
+    sudo groupadd "$WEBGROUP_IN"
+  fi
+  sudo gpasswd -a "$ARCHUSER" "$WEBGROUP_IN" >/dev/null
+  if id -u http >/dev/null 2>&1; then
+    sudo gpasswd -a http "$WEBGROUP_IN" >/dev/null
+  fi
+
+  # 2) Φάκελος Sites (δημιουργία αν λείπει) + perms
+  sudo install -d -o "$ARCHUSER" -g "$WEBGROUP_IN" -m 2775 "$SITES_DIR_IN"
+  sudo chgrp -R "$WEBGROUP_IN" "$SITES_DIR_IN"
+  sudo find "$SITES_DIR_IN" -type d -exec chmod 2775 {} \;
+  sudo find "$SITES_DIR_IN" -type f -exec chmod 664 {} \;
+
+  # 3) ACLs στο Sites
+  if command -v setfacl >/dev/null; then
+    sudo setfacl -R -m g:"$WEBGROUP_IN":rwx "$SITES_DIR_IN"
+    sudo setfacl -dR -m g:"$WEBGROUP_IN":rwx "$SITES_DIR_IN"
+  else
+    echo "[!] setfacl δεν βρέθηκε. Προτείνεται: sudo pacman -S acl"
+  fi
+
+  # 4) Δώσε traverse στο group στο $HOME
+  if command -v setfacl >/dev/null; then
+    sudo setfacl -m g:"$WEBGROUP_IN":x "/home/$ARCHUSER"
+  else
+    sudo chmod o+x "/home/$ARCHUSER"
+  fi
+
+  # 5) Git: shared perms
+  if command -v git >/dev/null; then
+    git config --global core.sharedRepository group
+  fi
+
+  # 6) PHP-FPM να τρέχει ως http:WEBGROUP
+  if [ -f "$PHPFPM_POOL" ]; then
+    sudo sed -i -E \
+      -e 's|^;?\s*user\s*=.*$|user = http|g' \
+      -e "s|^;?\s*group\s*=.*$|group = ${WEBGROUP_IN}|g" \
+      "$PHPFPM_POOL"
+  else
+    echo "[!] Δεν βρέθηκε pool: $PHPFPM_POOL"
+  fi
+
+  # 7) Systemd UMask=0002 για php-fpm (αρχεία 664/φάκελοι 775)
+  sudo install -d -m 0755 /etc/systemd/system/php-fpm.service.d
+  printf "[Service]\nUMask=0002\n" | sudo tee /etc/systemd/system/php-fpm.service.d/override.conf >/dev/null
+  sudo systemctl daemon-reload
+  sudo systemctl restart php-fpm 2>/dev/null || true
+
+  # 8) Restart webserver αν υπάρχει
+  if systemctl is-enabled --quiet httpd 2>/dev/null; then sudo systemctl restart httpd; fi
+  if systemctl is-enabled --quiet nginx 2>/dev/null; then sudo systemctl restart nginx; fi
+
+  echo "[✔] Setup ολοκληρώθηκε."
+  echo "    > Κάνε logout/login για να «φορεθούν» τα νέα groups στο shell σου."
 }
 
 # ---------------------------------------------------------------------------
@@ -75,12 +212,10 @@ PHP
         say "📁 Using root folder $path as DocumentRoot"
     fi
 
-    # Permissions
+    # Permissions (owner: user, group: WEBGROUP, setgid + ACLs)
     say "🔐 Setting permissions..."
-    sudo chown -R "$ARCH_USER:http" "$path"
-    sudo find "$path" -type d -exec chmod 775 {} \;
-    sudo find "$path" -type f -exec chmod 664 {} \;
-
+    _set_project_perms "$path" "$WEBGROUP"
+    
     # Ensure vhosts dir
     if [ ! -d "$VHOSTS_DIR" ]; then
         say "📁 Creating $VHOSTS_DIR..."
@@ -180,7 +315,7 @@ function scan_sites() {
 }
 
 # ---------------------------------------------------------------------------
-# Fix CMS permissions
+# Fix CMS permissions (ενιαία με WEBGROUP)
 # ---------------------------------------------------------------------------
 function fix_cms_perms() {
     local name="${1:-}"
@@ -192,27 +327,37 @@ function fix_cms_perms() {
         exit 1
     fi
 
-    say "🔧 Fixing CMS permissions for $name"
-    sudo chown -R "$ARCH_USER:http" "$path"
-    sudo find "$path" -type d -exec chmod 775 {} \;
-    sudo find "$path" -type f -exec chmod 664 {} \;
-    say "✅ Permissions fixed. Apache can now write to files."
+    say "🔧 Fixing CMS permissions for $name (group: $WEBGROUP)"
+    _set_project_perms "$path" "$WEBGROUP"
+
+    # Extra για συνηθισμένους φακέλους CMS
+    sudo chmod -R 775 "$path/storage" "$path/bootstrap/cache" "$path/wp-content" 2>/dev/null || true
+
+    # βεβαιώσου ότι ο http είναι μέλος του group (μία φορά αρκεί)
+    if ! id -nG http 2>/dev/null | grep -q "\b$WEBGROUP\b"; then
+        say "👤 Adding http to $WEBGROUP group..."
+        sudo gpasswd -a http "$WEBGROUP" >/dev/null
+        say "ℹ️ Restarting php-fpm to pick up groups..."
+        sudo systemctl restart php-fpm || true
+    fi
+
+    say "✅ Permissions fixed for $name!"
 }
 
 # ---------------------------------------------------------------------------
-# Service management
+# Service management (Arch: mariadb)
 # ---------------------------------------------------------------------------
 function start_services() {
     say "🚀 Starting services..."
     sudo systemctl start httpd
-    sudo systemctl start mysqld || true
+    sudo systemctl start mariadb || true
     say "✅ Services started."
 }
 
 function stop_services() {
     say "🛑 Stopping services..."
     sudo systemctl stop httpd || true
-    sudo systemctl stop mysqld || true
+    sudo systemctl stop mariadb || true
     say "✅ Services stopped."
 }
 
@@ -247,10 +392,9 @@ function init_laravel() {
         say "ℹ️ composer.json already exists — skipping create-project."
     fi
 
-    # Permissions
-    sudo chown -R "$ARCH_USER:http" "$path"
-    sudo find "$path" -type d -exec chmod 775 {} \;
-    sudo find "$path" -type f -exec chmod 664 {} \;
+    # Permissions (ενιαία)
+    _set_project_perms "$path" "$WEBGROUP"
+    # Laravel ειδικά
     sudo chmod -R 775 "$path/storage" "$path/bootstrap/cache" 2>/dev/null || true
 
     add_site "$name"
@@ -290,10 +434,8 @@ function init_wp() {
         say "ℹ️ WordPress already downloaded — skipping."
     fi
 
-    # Permissions
-    sudo chown -R "$ARCH_USER:http" "$path"
-    sudo find "$path" -type d -exec chmod 775 {} \;
-    sudo find "$path" -type f -exec chmod 664 {} \;
+    # Permissions (ενιαία)
+    _set_project_perms "$path" "$WEBGROUP"
 
     # Optional DB config if env vars exist
     local DB_NAME="${WP_DB_NAME:-}"
@@ -318,12 +460,58 @@ function init_wp() {
 }
 
 # ---------------------------------------------------------------------------
+# Health check για permissions σε ~/Sites
+# ---------------------------------------------------------------------------
+function check_sites() {
+    say "🔍 Checking permissions and groups in $SITES_DIR (expected: group=$WEBGROUP, files=664, dirs=2775)..."
+    local issues=0
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        echo "❌ $entry"
+        issues=$((issues+1))
+    done < <(
+        find "$SITES_DIR" \
+            \( -type f ! -perm 664 -o -type d ! -perm 2775 \) -o \
+            ! -group "$WEBGROUP" \
+            -exec ls -ld {} \;
+    )
+    if [ "$issues" -eq 0 ]; then
+        say "✅ All good — no permission/group issues found."
+    else
+        say "⚠️  Found $issues issues."
+        say "👉 You can fix them with: sites-manager repair"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Auto repair για permissions σε ~/Sites
+# ---------------------------------------------------------------------------
+function repair_sites() {
+    say "🔧 Fixing permissions and groups in $SITES_DIR..."
+    sudo chgrp -R "$WEBGROUP" "$SITES_DIR"
+    sudo find "$SITES_DIR" -type d -exec chmod 2775 {} \;
+    sudo find "$SITES_DIR" -type f -exec chmod 664 {} \;
+
+    if command -v setfacl >/dev/null; then
+        sudo setfacl -R -m g:"$WEBGROUP":rwx "$SITES_DIR"
+        sudo setfacl -dR -m g:"$WEBGROUP":rwx "$SITES_DIR"
+    fi
+    say "✅ Permissions repaired."
+}
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-ensure_include_in_httpd_conf
-ensure_sites_dir
+# Skip LAMP check for setup command since it should work before LAMP installation
+if [ "${1:-}" != "setup" ]; then
+    check_lamp_installation
+    ensure_include_in_httpd_conf
+    ensure_sites_dir
+fi
 
 case "${1:-}" in
+  setup)     setup ;;
   add)       add_site "${2:-}" ;;
   remove)    remove_site "${2:-}" ;;
   list)      list_sites ;;
@@ -331,6 +519,8 @@ case "${1:-}" in
   fix-cms)   fix_cms_perms "${2:-}" ;;
   start)     start_services ;;
   stop)      stop_services ;;
+  check)     check_sites ;;
+  repair)    repair_sites ;;
   init)
     case "${2:-}" in
       laravel) init_laravel "${3:-}" ;;
@@ -344,15 +534,20 @@ case "${1:-}" in
   *)
     cat <<USAGE
 🧰 Usage:
+  sites-manager setup             → Initial setup: create ~/Sites with proper permissions
   sites-manager add <site>        → Add new site (auto dirs & vhost)
   sites-manager remove <site>     → Remove site
   sites-manager list              → List active sites
   sites-manager scan              → Auto-add all from ~/Sites
   sites-manager fix-cms <site>    → Fix CMS permissions
-  sites-manager start             → Start Apache & MySQL
-  sites-manager stop              → Stop Apache & MySQL
+  sites-manager start             → Start Apache & MariaDB
+  sites-manager stop              → Stop Apache & MariaDB
+  sites-manager check              → CHealth check για permissions σε ~/Sites
+  sites-manager repair             → Auto repair για permissions σε ~/Sites
   sites-manager init laravel <s>  → Scaffold Laravel project + vhost
   sites-manager init wp <s>       → Scaffold WordPress project + vhost
+
+📝 Note: Run 'setup' first, then install LAMP stack with ./installLamp.sh
 USAGE
     ;;
 esac

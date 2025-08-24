@@ -6,6 +6,16 @@ set -euo pipefail
 
 say(){ echo -e "$*"; }
 
+# --- Globals -----------------------------------------------------------------
+WEBGROUP="${WEBGROUP:-webdev}"             # ίδιο group με sites-manager
+HTTPD_CONF="/etc/httpd/conf/httpd.conf"
+PHPMYADMIN_CONF="/etc/httpd/conf/extra/phpmyadmin.conf"
+PHPINI="/etc/php/php.ini"
+VHOSTS_DIR="/etc/httpd/conf/extra/vhosts.d"
+FPM_POOL="/etc/php/php-fpm.d/www.conf"
+FPM_OVERRIDE_DIR="/etc/systemd/system/php-fpm.service.d"
+FPM_OVERRIDE="$FPM_OVERRIDE_DIR/override.conf"
+
 say "🔧 Starting LAMP (Apache event + PHP-FPM) installation..."
 
 # --- Packages ----------------------------------------------------------------
@@ -13,12 +23,6 @@ say "===> Updating system and installing packages..."
 sudo pacman -Syu --noconfirm
 sudo pacman -S --noconfirm apache mariadb mariadb-clients \
   php php-fpm php-gd php-intl php-sqlite php-pgsql phpmyadmin
-
-HTTPD_CONF="/etc/httpd/conf/httpd.conf"
-PHPMYADMIN_CONF="/etc/httpd/conf/extra/phpmyadmin.conf"
-PHPINI="/etc/php/php.ini"
-VHOSTS_DIR="/etc/httpd/conf/extra/vhosts.d"
-FPM_POOL="/etc/php/php-fpm.d/www.conf"
 
 # --- Apache: event MPM + proxy_fcgi -----------------------------------------
 say "===> Configuring Apache for event MPM + proxy_fcgi..."
@@ -67,6 +71,7 @@ grep -q "^ServerName" "$HTTPD_CONF" || echo "ServerName localhost" | sudo tee -a
 # Include vhosts.d
 grep -q "IncludeOptional conf/extra/vhosts.d/*.conf" "$HTTPD_CONF" || \
   echo "IncludeOptional conf/extra/vhosts.d/*.conf" | sudo tee -a "$HTTPD_CONF" >/dev/null
+sudo mkdir -p "$VHOSTS_DIR"
 
 # Global PHP-FPM handler (FilesMatch)
 FPM_HANDLER="/etc/httpd/conf/extra/php-fpm.conf"
@@ -84,8 +89,7 @@ EOF
 grep -q "Include conf/extra/php-fpm.conf" "$HTTPD_CONF" || \
   echo "Include conf/extra/php-fpm.conf" | sudo tee -a "$HTTPD_CONF" >/dev/null
 
-# vhosts directory and a sane default vhost
-sudo mkdir -p "$VHOSTS_DIR"
+# Default vhost
 if [ ! -f "$VHOSTS_DIR/000-default.conf" ]; then
   sudo tee "$VHOSTS_DIR/000-default.conf" >/dev/null <<'EOF'
 <VirtualHost *:80>
@@ -107,10 +111,23 @@ say "===> Configuring PHP-FPM pool..."
 # Ensure socket and permissions suitable for Apache http user
 sudo sed -i 's#^;*listen = .*#listen = /run/php-fpm/php-fpm.sock#' "$FPM_POOL"
 sudo sed -i 's/^;*user = .*/user = http/' "$FPM_POOL"
-sudo sed -i 's/^;*group = .*/group = http/' "$FPM_POOL"
+# <-- πολύ σημαντικό: group = webdev ώστε ό,τι γράφει η PHP να ανήκει στο ίδιο group
+sudo sed -i "s/^;*group = .*/group = ${WEBGROUP}/" "$FPM_POOL"
 sudo sed -i 's/^;*listen.owner = .*/listen.owner = http/' "$FPM_POOL"
 sudo sed -i 's/^;*listen.group = .*/listen.group = http/' "$FPM_POOL"
 sudo sed -i 's/^;*listen.mode = .*/listen.mode = 0660/' "$FPM_POOL"
+
+# Systemd UMask=0002 για php-fpm (αρχεία 664/φάκελοι 775)
+sudo install -d -m 0755 "$FPM_OVERRIDE_DIR"
+printf "[Service]\nUMask=0002\n" | sudo tee "$FPM_OVERRIDE" >/dev/null
+
+# Βάλε τον http στο WEBGROUP (και εσένα αν θες)
+if ! id -nG http | grep -q "\b${WEBGROUP}\b"; then
+  sudo gpasswd -a http "$WEBGROUP" >/dev/null
+fi
+if ! id -nG "${SUDO_USER:-$USER}" | grep -q "\b${WEBGROUP}\b"; then
+  sudo gpasswd -a "${SUDO_USER:-$USER}" "$WEBGROUP" >/dev/null
+fi
 
 # --- PHP: extensions & php.ini ----------------------------------------------
 say "===> Configuring PHP extensions and php.ini..."
@@ -170,6 +187,14 @@ OPC
 )
 grep -q "opcache.enable_cli" "$PHPINI" || echo "$OPCACHE_BLOCK" | sudo tee -a "$PHPINI" >/dev/null
 
+# PHP sessions dir (σταθερό, αντί για /tmp)
+sudo install -d -m 1733 -o root -g root /var/lib/php/sessions
+if grep -q '^;*session.save_path' "$PHPINI"; then
+  sudo sed -i 's#^;*session.save_path\s*=.*#session.save_path = "/var/lib/php/sessions"#' "$PHPINI"
+else
+  echo 'session.save_path = "/var/lib/php/sessions"' | sudo tee -a "$PHPINI" >/dev/null
+fi
+
 # --- phpMyAdmin --------------------------------------------------------------
 say "===> Configuring phpMyAdmin..."
 PHPMYADMIN_CFG="/etc/webapps/phpmyadmin/config.inc.php"
@@ -186,8 +211,8 @@ sudo chmod 750 /var/lib/phpmyadmin
 sudo chmod 770 /var/lib/phpmyadmin/tmp
 
 # 2) Set $cfg['TempDir']
-sudo sed -i "s#^\(\$cfg\['TempDir'\]\s*=\s*\).*$#\1'/var/lib/phpmyadmin/tmp';#" /etc/webapps/phpmyadmin/config.inc.php \
-  || echo "\$cfg['TempDir'] = '/var/lib/phpmyadmin/tmp';" | sudo tee -a /etc/webapps/phpmyadmin/config.inc.php
+sudo sed -i "s#^\(\$cfg\['TempDir'\]\s*=\s*\).*$#\1'/var/lib/phpmyadmin/tmp';#" "$PHPMYADMIN_CFG" \
+  || echo "\$cfg['TempDir'] = '/var/lib/phpmyadmin/tmp';" | sudo tee -a "$PHPMYADMIN_CFG"
 
 sudo tee "$PHPMYADMIN_CONF" >/dev/null <<'EOF'
 Alias /phpmyadmin "/usr/share/webapps/phpMyAdmin"
@@ -199,7 +224,7 @@ Alias /phpmyadmin "/usr/share/webapps/phpMyAdmin"
 </Directory>
 EOF
 
-# --- DocumentRoot & sample ---------------------------------------------------
+# --- /srv/http sample --------------------------------------------------------
 say "===> Setting up /srv/http..."
 sudo mkdir -p /srv/http
 echo "<?php phpinfo(); ?>" | sudo tee /srv/http/info.php >/dev/null
@@ -231,6 +256,7 @@ say "===> Verifying Apache config..."
 sudo apachectl -t
 
 say "===> Enabling and starting PHP-FPM & Apache..."
+sudo systemctl daemon-reload
 sudo systemctl enable --now php-fpm
 sudo systemctl enable --now httpd
 
@@ -246,11 +272,18 @@ for svc in php-fpm httpd mariadb; do
   fi
 done
 
+# --- Final notes -------------------------------------------------------------
 say ""
 say "✅ Installation completed successfully (event MPM + PHP-FPM)."
 say "👉 Test URLs:"
 say "   http://localhost/info.php"
 say "   http://localhost/phpmyadmin"
+say ""
+say "ℹ️ Notes:"
+say "   • PHP-FPM runs as http:${WEBGROUP} with UMask=0002 (αρχεία 664 / φάκελοι 775)."
+say "   • PHP sessions: /var/lib/php/sessions (1733), όχι /tmp."
+say "   • Vhosts: ${VHOSTS_DIR} (include ενεργό)."
+say "   • Αν θες να χρησιμοποιήσεις το sites-manager, τρέξε: ./sites-manager.sh setup"
 say ""
 read -p "🔁 Do you want to reboot now? [y/N]: " confirm
 if [[ "${confirm:-N}" =~ ^[Yy]$ ]]; then
@@ -259,3 +292,4 @@ if [[ "${confirm:-N}" =~ ^[Yy]$ ]]; then
 else
   say "⏹ You can reboot later with: sudo reboot"
 fi
+
