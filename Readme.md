@@ -3,8 +3,11 @@
 
 ## 📦 Arch Linux LAMP Stack & Sites Manager
 
-This repository provides helper scripts to **install**, **remove**, and **manage** a local LAMP (Linux, Apache, MariaDB, PHP) stack on Arch Linux.  
+This repository provides helper scripts to **install**, **remove**, and **manage** a local LAMP (Linux, Apache, MariaDB, PHP) stack on Arch Linux.
+
 It also includes a `sites-manager` tool for easily creating and managing local virtual hosts, with sane **permissions and group handling**.
+
+After Installation you can also accese to phpMtAdmin. fro every vhost. For example mysite.test - mysite.test/phpmyadmin
 
 ---
 
@@ -15,9 +18,9 @@ All projects live under `~/Sites` and use a **shared group** (`webdev`) so that 
 The first step after installation is to run:
 ls -ld /tmp
 
-# you should see: drwxrwxrwt ... /tmp (the t at the end = sticky bit, perms 1777)
+#### you should see: drwxrwxrwt ... /tmp (the t at the end = sticky bit, perms 1777)
 
-# If it doesn't exist or the perms are wrong:
+#### If it doesn't exist or the perms are wrong:
 
 sudo mkdir -p /tmp
 sudo chmod 1777 /tmp
@@ -81,12 +84,13 @@ This will:
 
 The `sites-manager` script simplifies creating and managing local vhosts.
 
-### Install globally
+### Install sites-manager globally (optional but helpfull)
 
 ```bash
 sudo cp sites-manager.sh /usr/local/bin/sites-manager
 sudo chmod +x /usr/local/bin/sites-manager
 ```
+After you can run in terminal from everywhere like: sites-manager <command>
 
 ### Usage
 
@@ -128,7 +132,7 @@ sites-manager scan apply
 
 ## 🗑 Removing LAMP
 
-To remove everything:
+To remove everything and clean the system (exept Sites folder):
 
 ```bash
 ./removeLamp.sh
@@ -207,8 +211,6 @@ To remove everything:
 ### Laravel (zero to running in 3 steps)
 
 ```bash
-./installLamp.sh
-sites-manager setup
 sites-manager init laravel blog
 xdg-open http://blog.test
 ```
@@ -216,8 +218,6 @@ xdg-open http://blog.test
 ### WordPress (with DB auto-config)
 
 ```bash
-./installLamp.sh
-sites-manager setup
 WP_DB_NAME=wp_blog WP_DB_USER=root WP_DB_PASS=secret sites-manager init wp blog
 xdg-open http://blog.test
 ```
@@ -240,4 +240,3 @@ The scripts are provided *as-is* without any guarantees or warranties. Use them 
 I am not responsible for any data loss, misconfiguration, or damage that may result from using these scripts on your system.
 Always review and adapt the code to your specific needs before running it on production or critical environments.
 
-```
