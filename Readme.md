@@ -1,11 +1,4 @@
-* νέο **group-based permission model** (webdev)
-* το **setup** βήμα που κάνει auto-fix στα `~/Sites`
-* τις νέες εντολές `check` και `repair`
-* και τις βελτιώσεις που κάναμε στο `installLamp`.
-
----
-
-### Updated
+### Updated 23 Aug 2025
 
 
 ## 📦 Arch Linux LAMP Stack & Sites Manager
@@ -20,6 +13,14 @@ It also includes a `sites-manager` tool for easily creating and managing local v
 All projects live under `~/Sites` and use a **shared group** (`webdev`) so that both you and Apache/PHP (`http` user) can read/write files without permission conflicts.
 
 The first step after installation is to run:
+ls -ld /tmp
+
+# you should see: drwxrwxrwt ... /tmp (the t at the end = sticky bit, perms 1777)
+
+# If it doesn't exist or the perms are wrong:
+
+sudo mkdir -p /tmp
+sudo chmod 1777 /tmp
 
 ```bash
 sites-manager setup
@@ -90,21 +91,38 @@ sudo chmod +x /usr/local/bin/sites-manager
 ### Usage
 
 ```bash
-sites-manager setup             # One-time setup (create ~/Sites, groups, ACLs, PHP-FPM config)
-sites-manager add <site>        # Add new site (auto create dir & vhost)
-sites-manager remove <site>     # Remove site & vhost
-sites-manager list              # List active sites
-sites-manager scan              # Auto-detect sites in ~/Sites and add vhosts
-sites-manager fix-cms <site>    # Fix permissions for a specific project (Laravel/WP/etc.)
-sites-manager check             # Check for permission/group issues under ~/Sites
-sites-manager repair            # Auto-fix permission/group issues under ~/Sites
-sites-manager start             # Start Apache + MariaDB
-sites-manager stop              # Stop Apache + MariaDB
-sites-manager init laravel <s>  # Scaffold new Laravel project + vhost
-sites-manager init wp <s>       # Scaffold new WordPress site + vhost
+sites-manager setup               # One-time setup (create ~/Sites, groups, ACLs, PHP-FPM config)
+sites-manager add <site>          # Add new site (auto create dir & vhost)
+sites-manager remove <site>       # Remove site & vhost
+sites-manager list                # List active sites
+sites-manager scan [apply]        # Dry-run (default) or apply to add from ~/Sites
+sites-manager fix-cms <site>      # Fix permissions for a specific project (Laravel/WP/etc.)
+sites-manager check               # Check for permission/group issues under ~/Sites
+sites-manager repair              # Auto-fix permission/group issues under ~/Sites
+sites-manager debug <site|domain> # Deep 403 diagnostics (vhost, perms, index, Apache)
+sites-manager audit               # List vhosts with missing DocumentRoot
+sites-manager prune               # Remove missing vhosts and clean /etc/hosts
+sites-manager allow-home          # Allow httpd to read from /home (systemd override)
+sites-manager start               # Start Apache + MariaDB
+sites-manager stop                # Stop Apache + MariaDB
+sites-manager init laravel <s>    # Scaffold new Laravel project + vhost
+sites-manager init wp <s>         # Scaffold new WordPress site + vhost
 ```
 
 Projects are created under `~/Sites/<site>` and served at `http://<site>.test`.
+
+Scan logic:
+- If `<site>/public` exists → DocumentRoot is `<site>/public`; else `<site>`.
+- Only adds sites where the chosen DocumentRoot contains `index.php|html|htm`.
+- Skips hidden/underscored dirs and any dir with a `.nosite` file.
+
+Examples:
+```bash
+# Preview what would be added
+sites-manager scan
+# Apply changes (create vhosts + hosts entries)
+sites-manager scan apply
+```
 
 ---
 
@@ -162,6 +180,22 @@ To remove everything:
   sites-manager check   # list any issues
   sites-manager repair  # fix all issues
   ```
+
+* **Troubleshoot 403 after system updates**
+
+  Recent Arch updates enable systemd hardening for Apache (`ProtectHome=on`), which hides `/home` from httpd. If your sites live under `~/Sites`, enable read access:
+
+  ```bash
+  sites-manager allow-home
+  ```
+
+  Then verify a site:
+
+  ```bash
+  sites-manager debug mysite
+  ```
+
+  If needed, switch to full access by setting `ProtectHome=false` in `/etc/systemd/system/httpd.service.d/override.conf` and restarting httpd.
 
 * **SSL for local dev**
   Use [mkcert](https://github.com/FiloSottile/mkcert) for HTTPS on `.test` domains.
