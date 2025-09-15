@@ -241,8 +241,3 @@ I am not responsible for any data loss, misconfiguration, or damage that may res
 Always review and adapt the code to your specific needs before running it on production or critical environments.
 
 ```
-
----
-
-Θέλεις να στο στείλω και σαν `README.md` αρχείο έτοιμο να το ρίξεις μέσα στο repo;
-```
