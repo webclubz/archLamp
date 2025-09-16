@@ -1,4 +1,4 @@
-### Updated 23 Aug 2025
+### Updated 15 sep 2025
 
 
 ## 📦 Arch Linux LAMP Stack & Sites Manager
