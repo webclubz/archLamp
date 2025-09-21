@@ -16,6 +16,23 @@ After Installation you can also accese to phpMtAdmin. fro every vhost. For examp
 All projects live under `~/Sites` and use a **shared group** (`webdev`) so that both you and Apache/PHP (`http` user) can read/write files without permission conflicts.
 
 The first step after installation is to run:
+
+Set tmp dir and sizes in PHP config (either option A or B):
+A) php.ini (global)
+
+Edit /etc/php/php.ini and set:
+file_uploads = On
+upload_tmp_dir = /tmp
+post_max_size = 20M
+upload_max_filesize = 20M
+B) FPM pool override (preferred per‑pool)
+
+Edit /etc/php/php-fpm.d/www.conf and add:
+
+php_admin_value[upload_tmp_dir] = /tmp
+php_admin_value[post_max_size] = 20M
+php_admin_value[upload_max_filesize] = 20M
+
 ls -ld /tmp
 
 #### you should see: drwxrwxrwt ... /tmp (the t at the end = sticky bit, perms 1777)

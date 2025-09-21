@@ -117,6 +117,24 @@ sudo sed -i 's/^;*listen.owner = .*/listen.owner = http/' "$FPM_POOL"
 sudo sed -i 's/^;*listen.group = .*/listen.group = http/' "$FPM_POOL"
 sudo sed -i 's/^;*listen.mode = .*/listen.mode = 0660/' "$FPM_POOL"
 
+# Ensure specific php_admin_value overrides in pool
+fpm_set_admin_value(){
+  local key="$1" value="$2" conf="$FPM_POOL"
+  # Escape key for regex
+  local esc_key
+  esc_key=$(printf '%s' "$key" | sed 's/[]\/$*.^|[]/\\&/g')
+  if grep -Eq "^[;[:space:]]*php_admin_value\\[$esc_key\\]" "$conf"; then
+    sudo sed -i "s#^[;[:space:]]*php_admin_value\\[$esc_key\\].*#php_admin_value[$key] = $value#" "$conf"
+  else
+    echo "php_admin_value[$key] = $value" | sudo tee -a "$conf" >/dev/null
+  fi
+}
+
+# Apply requested admin values
+fpm_set_admin_value upload_tmp_dir /tmp
+fpm_set_admin_value post_max_size 20M
+fpm_set_admin_value upload_max_filesize 20M
+
 # Systemd UMask=0002 για php-fpm (αρχεία 664/φάκελοι 775)
 sudo install -d -m 0755 "$FPM_OVERRIDE_DIR"
 printf "[Service]\nUMask=0002\n" | sudo tee "$FPM_OVERRIDE" >/dev/null
@@ -292,4 +310,3 @@ if [[ "${confirm:-N}" =~ ^[Yy]$ ]]; then
 else
   say "⏹ You can reboot later with: sudo reboot"
 fi
-
