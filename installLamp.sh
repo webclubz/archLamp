@@ -6,6 +6,30 @@ set -euo pipefail
 
 say(){ echo -e "$*"; }
 
+# Ensure collaboration group exists before gpasswd/php-fpm pool config uses it.
+ensure_webgroup() {
+  if getent group "$WEBGROUP" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  say "⚠️ Group '$WEBGROUP' does not exist in /etc/group."
+  if [ -t 0 ]; then
+    local answer
+    read -r -p "Create group '$WEBGROUP' now? [Y/n]: " answer
+    case "${answer:-Y}" in
+      [Nn]|[Nn][Oo])
+        say "❌ Installation stopped. Create '$WEBGROUP' first, then rerun."
+        exit 1
+        ;;
+    esac
+  else
+    say "ℹ️ Non-interactive run detected. Creating '$WEBGROUP' automatically."
+  fi
+
+  sudo groupadd "$WEBGROUP"
+  say "✅ Group '$WEBGROUP' created."
+}
+
 # --- Globals -----------------------------------------------------------------
 WEBGROUP="${WEBGROUP:-webdev}"             # ίδιο group με sites-manager
 HTTPD_CONF="/etc/httpd/conf/httpd.conf"
@@ -108,6 +132,7 @@ fi
 
 # --- PHP-FPM: pool settings --------------------------------------------------
 say "===> Configuring PHP-FPM pool..."
+ensure_webgroup
 # Ensure socket and permissions suitable for Apache http user
 sudo sed -i 's#^;*listen = .*#listen = /run/php-fpm/php-fpm.sock#' "$FPM_POOL"
 sudo sed -i 's/^;*user = .*/user = http/' "$FPM_POOL"
